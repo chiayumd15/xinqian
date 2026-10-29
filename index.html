@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>心籤</title>
+<style>
+:root {
+  --bg: #0d0b14; --card: #171225; --gold: #e8c45a; --ink: #efe9dc;
+  --dim: #8d85a0; --green: #7fd48a; --red: #e07a6b; --cyan: #6ec6d8;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: radial-gradient(1200px 600px at 50% -10%, #241b3a 0%, var(--bg) 60%);
+  color: var(--ink);
+  font-family: "Noto Serif TC", "PingFang TC", serif;
+  min-height: 100vh; min-height: 100dvh;
+  display: flex; flex-direction: column; align-items: center;
+  padding: 24px 16px 40px;
+}
+h1 { font-size: 28px; letter-spacing: .3em; color: var(--gold); margin: 8px 0 2px; text-indent: .3em; }
+.sub { color: var(--dim); font-size: 13px; margin-bottom: 20px; letter-spacing: .1em; }
+button {
+  font-family: inherit; font-size: 16px; letter-spacing: .15em;
+  border: 1px solid var(--gold); color: var(--gold); background: transparent;
+  border-radius: 999px; padding: 12px 34px; cursor: pointer;
+}
+button:active { background: rgba(232,196,90,.15); }
+button[disabled] { opacity: .4; }
+#status { margin-top: 14px; font-size: 13px; color: var(--dim); min-height: 1.2em; }
+#status.ok { color: var(--cyan); }
+#status.err { color: var(--red); }
+
+.card {
+  display: none; width: 100%; max-width: 420px; margin-top: 26px;
+  background: linear-gradient(170deg, #1d1630 0%, var(--card) 70%);
+  border: 1px solid rgba(232,196,90,.45); border-radius: 18px;
+  padding: 30px 22px 22px; text-align: center; position: relative;
+  box-shadow: 0 10px 50px rgba(0,0,0,.5);
+}
+.card::before, .card::after {
+  content: "❖"; position: absolute; color: rgba(232,196,90,.5); font-size: 14px;
+}
+.card::before { top: 10px; left: 14px; }
+.card::after  { top: 10px; right: 14px; }
+.grade {
+  font-size: 64px; font-weight: 700; color: var(--gold); letter-spacing: .15em; text-indent: .15em;
+  text-shadow: 0 0 24px rgba(232,196,90,.35); margin-bottom: 6px;
+}
+.poem { font-size: 20px; line-height: 2; letter-spacing: .12em; margin: 10px 0 18px; }
+.yiji { display: flex; justify-content: center; gap: 26px; font-size: 16px; margin-bottom: 18px; }
+.yi { color: var(--green); } .ji { color: var(--red); }
+.metrics {
+  border-top: 1px dashed rgba(232,196,90,.3); padding-top: 12px;
+  display: flex; justify-content: space-around; font-family: ui-monospace, monospace;
+}
+.metrics div { font-size: 11px; color: var(--dim); }
+.metrics b { display: block; font-size: 17px; color: var(--ink); margin-top: 2px; }
+.stamp { margin-top: 14px; font-size: 11px; color: var(--dim); letter-spacing: .1em; }
+#shareBtn { display: none; margin-top: 22px; }
+.hint { margin-top: 26px; font-size: 12px; color: var(--dim); line-height: 1.9; text-align: center; }
+</style>
+</head>
+<body>
+<h1>心 籤</h1>
+<div class="sub">以心跳為熵 · 以脈息問天</div>
+
+<button id="connectBtn">連 線 求 籤</button>
+<div id="status">尚未連線</div>
+
+<div class="card" id="card">
+  <div class="grade" id="grade">—</div>
+  <div class="poem" id="poem"></div>
+  <div class="yiji">
+    <span class="yi" id="yi"></span>
+    <span class="ji" id="ji"></span>
+  </div>
+  <div class="metrics">
+    <div>心率<b id="mBpm">–</b></div>
+    <div>rMSSD<b id="mRmssd">–</b></div>
+    <div>SD1<b id="mSd1">–</b></div>
+    <div>SD2<b id="mSd2">–</b></div>
+  </div>
+  <div class="stamp" id="stamp"></div>
+</div>
+
+<button id="shareBtn">分 享 此 籤</button>
+
+<div class="hint">
+  裝置切到「心籤」模式後按下連線，<br>
+  再按裝置上的抽籤鍵，收心三十秒，籤至。<br>
+  （Android Chrome 可直接使用；iPhone 請用 Bluefy 瀏覽器）
+</div>
+
+<script>
+const NUS      = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const NUS_TX   = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // device -> phone (notify)
+const statusEl = document.getElementById('status');
+const connectBtn = document.getElementById('connectBtn');
+const shareBtn = document.getElementById('shareBtn');
+let rxBuf = '';
+let lastFortune = null;
+
+function setStatus(t, cls) { statusEl.textContent = t; statusEl.className = cls || ''; }
+
+connectBtn.addEventListener('click', async () => {
+  if (!navigator.bluetooth) {
+    setStatus('此瀏覽器不支援 Web Bluetooth（iPhone 請改用 Bluefy）', 'err');
+    return;
+  }
+  try {
+    setStatus('搜尋裝置中…');
+    const device = await navigator.bluetooth.requestDevice({
+      filters: [{ namePrefix: 'XinQian' }],
+      optionalServices: [NUS],
+    });
+    device.addEventListener('gattserverdisconnected', () => setStatus('已斷線，可重新連線', 'err'));
+    setStatus('連線中…');
+    const server = await device.gatt.connect();
+    const svc = await server.getPrimaryService(NUS);
+    const tx = await svc.getCharacteristic(NUS_TX);
+    await tx.startNotifications();
+    tx.addEventListener('characteristicvaluechanged', onData);
+    setStatus('已連線 ' + device.name + '，請在裝置上抽籤', 'ok');
+    connectBtn.textContent = '已 連 線';
+    connectBtn.disabled = true;
+  } catch (e) {
+    setStatus('連線失敗：' + e.message, 'err');
+  }
+});
+
+function onData(ev) {
+  rxBuf += new TextDecoder().decode(ev.target.value);
+  let i;
+  while ((i = rxBuf.indexOf('\n')) >= 0) {
+    const line = rxBuf.slice(0, i).trim();
+    rxBuf = rxBuf.slice(i + 1);
+    if (!line) continue;
+    try { handleMsg(JSON.parse(line)); } catch (_) {}
+  }
+}
+
+function handleMsg(m) {
+  if (m.t === 'fortune') showFortune(m);
+  else if (m.t === 'hrv') setStatus(`HRV：${m.beats} 拍 · RMSSD ${m.RMSSD} ms · SD1 ${m.SD1} / SD2 ${m.SD2}`, 'ok');
+}
+
+function showFortune(m) {
+  lastFortune = m;
+  document.getElementById('grade').textContent = m.grade;
+  document.getElementById('poem').innerHTML = m.poem1 + '<br>' + m.poem2;
+  document.getElementById('yi').textContent = '宜　' + m.yi;
+  document.getElementById('ji').textContent = '忌　' + m.ji;
+  document.getElementById('mBpm').textContent = m.bpm;
+  document.getElementById('mRmssd').textContent = m.rmssd;
+  document.getElementById('mSd1').textContent = m.sd1;
+  document.getElementById('mSd2').textContent = m.sd2;
+  const d = new Date();
+  document.getElementById('stamp').textContent =
+    `${d.getFullYear()}.${String(d.getMonth()+1).padStart(2,'0')}.${String(d.getDate()).padStart(2,'0')} ` +
+    `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')} · 心跳 ${m.n} 拍成籤`;
+  document.getElementById('card').style.display = 'block';
+  shareBtn.style.display = 'inline-block';
+  setStatus('籤至 ✦', 'ok');
+}
+
+shareBtn.addEventListener('click', async () => {
+  if (!lastFortune) return;
+  const m = lastFortune;
+  const text = `【心籤 · ${m.grade}】\n${m.poem1}，${m.poem2}。\n宜 ${m.yi}｜忌 ${m.ji}\n（心率 ${m.bpm}，rMSSD ${m.rmssd} ms）`;
+  if (navigator.share) {
+    try { await navigator.share({ title: '心籤', text }); } catch (_) {}
+  } else {
+    await navigator.clipboard.writeText(text);
+    setStatus('已複製籤文，可貼上分享', 'ok');
+  }
+});
+</script>
+</body>
+</html>
